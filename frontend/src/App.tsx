@@ -2,7 +2,8 @@ import { useState, type FormEvent } from "react";
 import QualityScoreCard from "./components/QualityScoreCard";
 import FindingsList from "./components/FindingsList";
 import CodeComparison from "./components/CodeComparison";
-import { createReview } from "./services/api";
+import EvaluationProgress from "./components/EvaluationProgress";
+import { createReviewStreaming, type ProgressEvent } from "./services/api";
 import type { ReviewResponse } from "./types/review";
 import { getAllReviewFindings } from "./utils/normalizeReview";
 
@@ -21,6 +22,8 @@ export default function App() {
   const [language, setLanguage] = useState("Python");
   const [sourceCode, setSourceCode] = useState("");
   const [loading, setLoading] = useState(false);
+  const [stage, setStage] = useState<ProgressEvent["stage"]>("analyzing");
+  const [findingsCount, setFindingsCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [review, setReview] = useState<ReviewResponse | null>(null);
 
@@ -32,22 +35,23 @@ export default function App() {
     }
     setLoading(true);
     setError(null);
+    setReview(null);
+    setStage("analyzing");
+    setFindingsCount(null);
     try {
-      const result = await createReview({
-        programming_language: language,
-        source_code: sourceCode,
-      });
+      const result = await createReviewStreaming(
+        { programming_language: language, source_code: sourceCode },
+        (event) => {
+          setStage(event.stage);
+          if (typeof event.findings_count === "number") {
+            setFindingsCount(event.findings_count);
+          }
+        },
+      );
       setReview(result);
     } catch (err: unknown) {
       let msg = "Evaluation failed. Is the API running?";
-      if (err && typeof err === "object" && "response" in err) {
-        const axiosErr = err as { response?: { data?: { detail?: string | { msg?: string }[] } } };
-        const detail = axiosErr.response?.data?.detail;
-        if (typeof detail === "string") msg = detail;
-        else if (Array.isArray(detail) && detail[0]?.msg) msg = detail[0].msg;
-      } else if (err instanceof Error) {
-        msg = err.message;
-      }
+      if (err instanceof Error && err.message) msg = err.message;
       setError(msg);
     } finally {
       setLoading(false);
@@ -115,6 +119,8 @@ export default function App() {
           )}
         </button>
       </form>
+
+      {loading && <EvaluationProgress stage={stage} findingsCount={findingsCount} />}
 
       {review && (
         <div className="mt-8 space-y-6">

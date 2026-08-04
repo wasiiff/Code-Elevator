@@ -19,6 +19,13 @@ class FindingsList(BaseModel):
     findings: List[Finding] = Field(default_factory=list)
 
 
+class StrategyAndFindings(BaseModel):
+    """Stage 1 output — the review plan and the findings it produced."""
+
+    strategy_plan: List[str] = Field(default_factory=list)
+    findings: List[Finding] = Field(default_factory=list)
+
+
 class ReviewRequest(BaseModel):
     programming_language: str
     source_code: str

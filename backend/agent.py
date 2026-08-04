@@ -1,25 +1,36 @@
-"""LangChain LCEL orchestration for code evaluation (no LangGraph)."""
+"""LangChain LCEL orchestration for code evaluation (no LangGraph).
+
+Two sequential stages rather than four:
+
+    1. analyse    — plan the review and produce findings in one structured call
+    2. refactor + score — run concurrently, since scoring rates the submitted
+                          code and so does not depend on the refactor
+
+An optional ``on_progress`` callback reports stage transitions so the UI can
+show what the pipeline is doing instead of an undifferentiated spinner.
+"""
+import asyncio
 import os
 import warnings
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 import env_loader  # noqa: F401 — loads backend/.env before reading os.environ
 from prompts import (
-    EVALUATOR_HUMAN,
-    EVALUATOR_SYSTEM,
-    PLANNER_HUMAN,
-    PLANNER_SYSTEM,
+    ANALYST_HUMAN,
+    ANALYST_SYSTEM,
     REFACTORER_HUMAN,
     REFACTORER_SYSTEM,
     SYNTHESIZER_HUMAN,
     SYNTHESIZER_SYSTEM,
 )
-from schemas import Finding, FindingsList, SynthesizerOutput
+from schemas import Finding, StrategyAndFindings, SynthesizerOutput
 
 _PLACEHOLDER_KEY = "your_gemini_api_key_here"
+
+ProgressHook = Callable[[Dict[str, Any]], Awaitable[None]]
 
 # Some Gemini models (e.g. gemini-3.6-flash) use fixed sampling and ignore
 # `temperature`, warning once per call. The per-stage temperatures below still
@@ -71,13 +82,13 @@ def _text(msg: Any) -> str:
     return str(content)
 
 
-def _parse_strategy(text: str) -> List[str]:
-    lines = []
-    for raw in text.strip().splitlines():
-        line = raw.strip().lstrip("-•*").strip()
+def _clean_strategy(items: List[str]) -> List[str]:
+    cleaned = []
+    for raw in items:
+        line = (raw or "").strip().lstrip("-•*").strip()
         if line:
-            lines.append(line)
-    return lines[:5] or ["Review security, performance, and clean code."]
+            cleaned.append(line)
+    return cleaned[:5] or ["Review security, performance, and clean code."]
 
 
 def _fmt_findings(findings: List[Finding]) -> str:
@@ -92,57 +103,68 @@ def _fmt_findings(findings: List[Finding]) -> str:
     return "\n".join(parts)
 
 
-async def run_evaluation(language: str, source_code: str) -> Dict[str, Any]:
-    planner = ChatPromptTemplate.from_messages(
-        [("system", PLANNER_SYSTEM), ("human", PLANNER_HUMAN)]
-    ) | _llm(0.3)
-    plan_msg = await planner.ainvoke(
+def _strip_fences(text: str) -> str:
+    out = text.strip()
+    if out.startswith("```"):
+        out = "\n".join(out.splitlines()[1:-1]).strip()
+    return out
+
+
+async def run_evaluation(
+    language: str,
+    source_code: str,
+    on_progress: Optional[ProgressHook] = None,
+) -> Dict[str, Any]:
+    async def emit(stage: str, **extra: Any) -> None:
+        if on_progress:
+            await on_progress({"stage": stage, **extra})
+
+    await emit("analyzing")
+    analyst = ChatPromptTemplate.from_messages(
+        [("system", ANALYST_SYSTEM), ("human", ANALYST_HUMAN)]
+    ) | _llm(0.1).with_structured_output(StrategyAndFindings)
+    analysis: StrategyAndFindings = await analyst.ainvoke(
         {"programming_language": language, "source_code": source_code}
     )
-    strategy_plan = _parse_strategy(_text(plan_msg))
+    strategy_plan = _clean_strategy(analysis.strategy_plan)
+    findings = analysis.findings
+    findings_text = _fmt_findings(findings)
 
-    evaluator = ChatPromptTemplate.from_messages(
-        [("system", EVALUATOR_SYSTEM), ("human", EVALUATOR_HUMAN)]
-    ) | _llm(0.1).with_structured_output(FindingsList)
-    eval_out: FindingsList = await evaluator.ainvoke(
-        {
-            "programming_language": language,
-            "strategy_plan": "\n".join(f"- {s}" for s in strategy_plan),
-            "source_code": source_code,
-        }
+    await emit(
+        "refactoring",
+        findings_count=len(findings),
+        strategy_count=len(strategy_plan),
     )
-    findings = eval_out.findings
 
     refactorer = ChatPromptTemplate.from_messages(
         [("system", REFACTORER_SYSTEM), ("human", REFACTORER_HUMAN)]
     ) | _llm(0.2)
-    ref_msg = await refactorer.ainvoke(
-        {
-            "programming_language": language,
-            "findings": _fmt_findings(findings),
-            "source_code": source_code,
-        }
-    )
-    refactored = _text(ref_msg).strip()
-    if refactored.startswith("```"):
-        refactored = "\n".join(refactored.splitlines()[1:-1]).strip()
-
     synthesizer = ChatPromptTemplate.from_messages(
         [("system", SYNTHESIZER_SYSTEM), ("human", SYNTHESIZER_HUMAN)]
     ) | _llm(0.2).with_structured_output(SynthesizerOutput)
-    synth: SynthesizerOutput = await synthesizer.ainvoke(
-        {
-            "programming_language": language,
-            "strategy_plan": "\n".join(f"- {s}" for s in strategy_plan),
-            "findings": _fmt_findings(findings),
-            "refactored_code": refactored,
-        }
+
+    ref_msg, synth = await asyncio.gather(
+        refactorer.ainvoke(
+            {
+                "programming_language": language,
+                "findings": findings_text,
+                "source_code": source_code,
+            }
+        ),
+        synthesizer.ainvoke(
+            {
+                "programming_language": language,
+                "strategy_plan": "\n".join(f"- {s}" for s in strategy_plan),
+                "findings": findings_text,
+                "source_code": source_code,
+            }
+        ),
     )
 
     return {
         "strategy_plan": strategy_plan,
         "findings": [f.model_dump() for f in findings],
-        "refactored_code": refactored,
+        "refactored_code": _strip_fences(_text(ref_msg)),
         "quality_score": synth.quality_score,
         "executive_summary": synth.executive_summary,
     }
