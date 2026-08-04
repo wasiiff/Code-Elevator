@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+motor
+pydantic
+langchain
+langchain-core
+langchain-openai
+python-dotenv
+pymongo
