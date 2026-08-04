@@ -179,6 +179,8 @@ Now use the [3 commands](#run-it--3-commands) above.
 
 | Symptom | Fix |
 |---------|-----|
+| `start_mongo.ps1 cannot be loaded ... is not digitally signed` | The file is marked as downloaded from the internet (common if you got the project as a `.zip`). Clear the mark: `Unblock-File .\backend\start_mongo.ps1`. One-off alternative: `pwsh -ExecutionPolicy Bypass -File .\backend\start_mongo.ps1`. |
+| `[WinError 10013] ... socket ... forbidden` on startup | Port 8000 is already taken — usually an API instance you left running. Find it with `Get-NetTCPConnection -LocalPort 8000 -State Listen`, stop that PID, or run on another port with `--port 8001`. |
 | `503 GEMINI_API_KEY is not configured` | Set a real key in `backend/.env`, restart the API. Check with `python backend/check_gemini_key.py`. |
 | `404 ... no longer available to new users` | That `GEMINI_MODEL` is retired for new keys. Use `gemini-3.6-flash`. |
 | `503 UNAVAILABLE ... high demand` | The model is temporarily overloaded — retry, or switch `GEMINI_MODEL`. |
