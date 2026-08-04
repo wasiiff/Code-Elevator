@@ -30,12 +30,12 @@ app.add_middleware(
 )
 
 
-def _ensure_openai_api_key() -> None:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not key or key == "your_openai_api_key_here":
+def _ensure_gemini_api_key() -> None:
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key or key == "your_gemini_api_key_here":
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY is not configured. Set a valid key in backend/.env and restart the API.",
+            detail="GEMINI_API_KEY is not configured. Set a valid key in backend/.env and restart the API.",
         )
 
 
@@ -53,7 +53,7 @@ def _serialize(doc: dict) -> dict:
 
 @app.post("/api/v1/reviews", response_model=ReviewResponse)
 async def create_review(payload: ReviewRequest) -> ReviewResponse:
-    _ensure_openai_api_key()
+    _ensure_gemini_api_key()
     try:
         result = await run_evaluation(payload.programming_language, payload.source_code)
     except Exception as exc:
